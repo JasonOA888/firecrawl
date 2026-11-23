@@ -34,6 +34,7 @@ import { isAgentExtractModelValid } from "../../../controllers/v1/types";
 import { hasFormatOfType } from "../../../lib/format-utils";
 import { isUsOnly } from "../../../lib/us-only";
 import { aiTelemetry } from "../../../lib/ai-telemetry";
+import { config } from "../../../config";
 
 // Smart model selection based on schema
 function detectRecursiveSchema(schema: any): boolean {
@@ -85,13 +86,15 @@ type LanguageModelV1ProviderMetadata = {
   };
 };
 
+const DEFAULT_MAX_INPUT_TOKENS = 8192;
+
 // Get max tokens from model prices
 const getModelLimits = (model: string) => {
   const modelConfig = modelPrices[model];
   if (!modelConfig) {
     // Default fallback values
     return {
-      maxInputTokens: 8192,
+      maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
       maxOutputTokens: 4096,
       maxTokens: 12288,
     };
@@ -477,15 +480,23 @@ export async function generateCompletions({
     throw new Error("document.markdown is undefined -- this is unexpected");
   }
 
-  // Keep the content inside the model's context window, leaving the rest for
-  // the prompt, schema and output. Models without known limits are sent the
-  // content as-is. A BPE token is at least one byte, so content that fits in
-  // bytes skips the (synchronous) tokenizer entirely.
-  const maxInputTokens = modelPrices[modelId]?.max_input_tokens;
+  // Leave room for the prompt, schema and output. For listed models, don't
+  // infer an input budget from max_tokens: it can be an output-only limit.
+  const price = Object.hasOwn(modelPrices, modelId)
+    ? modelPrices[modelId]
+    : undefined;
+  const maxInputTokens =
+    config.MODEL_MAX_INPUT_TOKENS ??
+    (price ? price.max_input_tokens : DEFAULT_MAX_INPUT_TOKENS);
   if (markdown && maxInputTokens) {
     const maxContentTokens = Math.floor(maxInputTokens * 0.8);
+    // A BPE token covers at least one byte; small pages skip the tokenizer.
     if (Buffer.byteLength(markdown, "utf8") > maxContentTokens) {
-      const trimmed = trimToTokenLimit(markdown, maxContentTokens, modelId);
+      const trimmed = trimToTokenLimit(
+        markdown,
+        maxContentTokens,
+        price ? modelId : undefined,
+      );
       markdown = trimmed.text;
       warning = trimmed.warning;
     }

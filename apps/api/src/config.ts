@@ -771,6 +771,9 @@ const configSchema = z.object({
 
   // AI/ML
   MODEL_NAME: z.string().optional(),
+  MODEL_MAX_INPUT_TOKENS: blankStringAsUnset(
+    z.coerce.number().int().positive().optional(),
+  ),
   OLLAMA_BASE_URL: z.string().optional(),
   VERTEX_CREDENTIALS: z.string().optional(),
   // Uses Vertex with ambient credentials when VERTEX_CREDENTIALS is unset.

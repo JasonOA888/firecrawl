@@ -22,6 +22,7 @@ import {
   generateCrawlerOptionsFromPrompt,
 } from "./llmExtract";
 import { CostTracking } from "../../../lib/cost-tracking";
+import { config } from "../../../config";
 import { modelPrices } from "../../../lib/extract/usage/model-prices";
 
 const noopLogger = {
@@ -59,8 +60,15 @@ function countTokens(text: string): number {
   }
 }
 
+const originalMaxInputTokens = config.MODEL_MAX_INPUT_TOKENS;
+
 beforeEach(() => {
   (generateObject as Mock).mockClear();
+  config.MODEL_MAX_INPUT_TOKENS = undefined;
+});
+
+afterEach(() => {
+  config.MODEL_MAX_INPUT_TOKENS = originalMaxInputTokens;
 });
 
 describe("generateCompletions content trimming", () => {
@@ -95,8 +103,57 @@ describe("generateCompletions content trimming", () => {
     expect(lastCall().prompt).toContain(markdown);
   });
 
-  it("does not trim for models without known limits", async () => {
-    const result = await run(hugeMarkdown, "some-unlisted-model");
+  const localModel = "self-hosted-model:latest";
+  const pageHead = "The founder is the first fact on the page.";
+  const pageTail = "Trailing navigation should not displace the page head.";
+  const localMarkdown = [
+    pageHead,
+    hugeMarkdown.slice(0, 100_000),
+    pageTail,
+  ].join("\n\n");
+
+  it.each([
+    ["default", undefined, 8192],
+    ["configured", 2048, 2048],
+  ] as const)(
+    "preserves extraction instructions and the page head within the %s budget for an unlisted model",
+    async (_label, configuredLimit, limit) => {
+      config.MODEL_MAX_INPUT_TOKENS = configuredLimit;
+      const result = await run(localMarkdown, localModel, {
+        type: "object",
+        properties: { founder: { type: "string" } },
+      });
+
+      const { prompt, schema } = lastCall();
+      expect(result.warning).toContain(
+        "the input has been automatically trimmed",
+      );
+      expect(prompt).toMatch(
+        /^Transform the following content into structured JSON output/,
+      );
+      expect(prompt).toContain(pageHead);
+      expect(prompt).not.toContain(pageTail);
+      expect(schema.jsonSchema.properties).toEqual({
+        founder: { type: "string" },
+      });
+      expect(
+        countTokens(prompt) + countTokens(JSON.stringify(schema.jsonSchema)),
+      ).toBeLessThan(limit);
+    },
+  );
+
+  it("does not warn or trim when an unlisted model's input fits", async () => {
+    const markdown = "Product details. ".repeat(600);
+    const result = await run(markdown, localModel);
+
+    expect(result.warning).toBeUndefined();
+    expect(lastCall().prompt).toContain(markdown);
+  });
+
+  it("does not use an output-only limit as the input budget", async () => {
+    const model = "openrouter/microsoft/wizardlm-2-8x22b:nitro";
+    expect("max_input_tokens" in modelPrices[model]).toBe(false);
+    const result = await run(hugeMarkdown, model);
 
     expect(result.warning).toBeUndefined();
     expect(lastCall().prompt).toContain(hugeMarkdown);
